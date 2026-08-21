@@ -1,69 +1,102 @@
-# CONVENTIONS
+# CONVENTIONS.md — gclean coding conventions
 
-Coding patterns and invariants to preserve when extending `gclean`.
+## Code style
 
-## Go style and package boundaries
+- Standard `gofmt`; the repo is gofmt-clean. `go vet ./...` is part of the
+  default gate (`just check`).
+- Go 1.26 idioms. Note: Go 1.26 promoted `maplit` ("duplicate key in map
+  literal") from vet warning to **build failure** — prefer slice-of-structs
+  case tables over map literals in tests (see `.plans/implement-notes.md`).
+- `golangci-lint` is run when installed but is optional in the lint recipes.
+- Doc comments on all exported identifiers, especially in `internal/models`
+  and the pure `internal/engine` package.
 
-- Use standard `gofmt` formatting and conventional Go import grouping.
-- Keep implementation packages under `internal/`; the only executable package is `cmd/gclean`.
-- Use small packages by responsibility: `cli`, `config`, `defang`, `engine`, `gmailclient`, `models`, `storage`, and `tui`.
-- `internal/cli` is the composition root. It may import the other application packages; lower layers should not import `cli`.
-- `internal/engine`'s classifier, evaluator, protector, and planner are deterministic in-memory logic. Pipeline stages are the explicit I/O orchestration seam.
-- `engine.Gmailer` is a local narrow interface so pipeline code does not depend on the concrete Gmail package.
+## Package-level conventions
 
-## CLI conventions
+- **`internal/engine` is pure** — no I/O, no clocks except passed-in
+  arguments. This is a documented invariant (`internal/engine/classifier.go`
+  package doc) so the decision logic is unit-testable against fixtures.
+- **`internal/config` → `engine` only**; `engine` never imports `config`.
+- **`internal/gmailclient` is the only package that touches Gmail.** The
+  rest of the codebase depends on the `Client` interface
+  (`internal/gmailclient/client.go`), never on `RealClient`/`FakeClient`
+  concretely.
+- **The engine declares its own narrow `Gmailer` interface** rather than
+  importing `gmailclient` (`internal/engine/pipeline.go`).
 
-- Build commands with `newXCmd(out, errOut io.Writer) *cobra.Command`.
-- Use `RunE`, return errors, and set `SilenceErrors`/`SilenceUsage` on the root command (`internal/cli/cli.go:42-44`).
-- Inject output writers rather than writing directly to process stdout/stderr; this makes CLI tests deterministic.
-- Resolve paths through central helpers (`storePath`, `credentialsPath`, `defaultCache`) and respect the documented environment variables.
-- Use `--fixtures` to select `FakeClient` for local development and tests.
-- Any command that changes Gmail state must require `--yes`; print an actionable refusal before returning `errors.New("confirmation required")`.
-- Use `text/tabwriter` for tables and the shared `humanBytes` formatter for byte values.
+## The email-literal rule (CRITICAL)
+
+Raw `local@domain` literals are **forbidden in non-test `*.go`/`*.json`**.
+CI (`scripts/lint-email-literals.sh`) and pre-commit reject them because
+Cloudflare's source-pass silently rewrites such literals to `[email protected]`
+(no `@`), breaking domain extraction and equality checks. Always assemble at
+runtime:
+
+```go
+addr := defang.MkEmail("noreply", "example.com") // "noreply@example.com"
+```
+
+- `defang.MkEmail` lives in `internal/defang` (non-test) so production
+  fixture loaders and demo commands can use it too.
+- Tests use the same pattern (`defang.MkEmail`, or a local `mkT`/`mk` join).
+- **Data fixtures on disk are also vulnerable**: tests that assert on
+  email identity build synthetic fixtures at runtime via `MkEmail` rather
+  than trusting `testdata/fixtures/messages.json`
+  (`TestSenderCommand_SyntheticFixturePipeline_ShowsExpectedSenders`).
+- The lint allows `*_test.go`, `testdata/`, `vendor/`, `.git`, `.plans`, and
+  comment lines.
+
+## Command & handler conventions
+
+- Every subcommand is `newXxxCmd(out, errOut io.Writer) *cobra.Command`,
+  registered in `Build()` (`internal/cli/cli.go`). Adding a subcommand MUST
+  also extend `TestBuild_Help`'s substring list.
+- Handlers are thin: they open the store, resolve client + config, build an
+  `engine.Pipeline`, and run the stage slice they need. Heavy logic lives in
+  `engine`/`storage`/`gmailclient`.
+- `--yes` is required before `clean`/`purge` mutate state; the gate is
+  enforced at the top of the handler (`internal/cli/pipeline.go`).
+- `--fixtures PATH` wins over real Gmail in `resolveClient` so dev/test
+  always uses `FakeClient`.
 
 ## Error handling
 
-- Wrap lower-level failures with context and `%w`, for example `fmt.Errorf("list messages: %w", err)`.
-- Keep sentinel errors in the owning package (`ErrCredentialsMissing`, `ErrNotImplemented`).
-- Preserve actionable path/operation context in filesystem, config, SQLite, Gmail, and OAuth errors.
-- Watch mode treats one iteration failure as recoverable and reports it to `errOut`; cancellation is handled through context/signals.
-- Ignore errors only where the operation is intentionally best-effort or non-critical, such as output writes, closing resources, or cleanup of an already-absent cache.
+- Errors are wrapped with `%w` and contextual prefixes
+  (`fmt.Errorf("trash: %w", err)`).
+- Cobra runs with `SilenceUsage: true` and `SilenceErrors: true`; the entry
+  point prints `error: ...` to stderr and exits 1
+  (`cmd/gclean/main.go`).
+- Human-readable "refusing" messages go to stderr *and* the command returns
+  a sentinel error (e.g. `errors.New("confirmation required")`).
+- The engine returns typed errors with stable strings where tests assert on
+  them (e.g. `ErrCredentialsMissing`, `"checksum mismatch"`).
 
-## Safety conventions
+## Concurrency & state
 
-- Keep `Plan`'s priority order explicit and documented. New rules must be placed relative to the existing safety checks, not appended casually.
-- Never allow a matching delete rule to delete a non-junk message; preserve `delete_rule_refused_non_junk`.
-- `clean` means recoverable Trash; permanent deletion belongs only to `purge`.
-- Do not fetch or persist message bodies under the default metadata-only model.
-- Preserve undo records before/while trashing and validate the cache before restoring it.
-- Add a test for every new planner branch or mutation gate.
+- `FakeClient` guards its in-memory trash map with a `sync.Mutex`
+  (`internal/gmailclient/fake.go`).
+- Undo cache and selection files are written **atomically**: temp file +
+  `fsync` + rename + directory sync (`internal/storage/undocache.go`,
+  `internal/storage/selection.go`). Never write the canonical path directly.
+- The undo cache refuses to overwrite a non-empty existing cache (`undo
+  cache already exists ...`).
 
-## Data and reason-code conventions
+## Safety invariants (from AGENTS.md)
 
-- `models.Message` mirrors Gmail-shaped JSON names (`threadId`, `isContact`) and uses `time.Time` for parsed dates.
-- Stable reason codes are exported constants in `internal/models/models.go`; append new codes rather than renumbering or renaming existing values.
-- Planner reasons use recognisable prefixes: `protect:`, `config_keep:`, `config_archive:`, `config_delete:`, plus `ignored_domain`, `delete_rule_refused_non_junk`, and `default_keep`.
-- Store booleans as SQLite integers through `boolInt`; serialize labels as comma-separated values and headers as JSON at the current storage boundary.
-- Keep aggregate/report construction close to the scan that supplies its fields; `storage.Aggregations()` is the single source for stats and sender safety rollups.
+- `--yes` required before `clean`/`purge` modify state.
+- Planner refuses to delete a non-junk message even if a delete rule matches
+  (`internal/engine/planner.go`).
+- `clean` moves to Trash (recoverable); only `purge` empties Trash
+  permanently.
+- Undo cache preserves pre-trash records and is written **before** any Gmail
+  mutation.
 
-## Configuration DSL
+## Documentation & handoff
 
-- Rules use `key:value` predicates separated by spaces or commas.
-- Supported keys are `has`, `subject`, `category`, `from`, `older_than`, and `larger_than` (`internal/engine/evaluator.go:81-124`).
-- Durations accept only `Nd`; byte sizes accept `B`, `KB`, `MB`, or `GB`, case-insensitively.
-- Empty rules never match. Unknown predicates return false.
-- YAML field names are stable because users edit `config.yaml`; do not rename fields without a migration strategy.
-
-## OAuth and filesystem conventions
-
-- Persist OAuth tokens at mode `0600`; create parent directories with restrictive permissions where appropriate.
-- Use `GCLEAN_TOKEN_PATH` for tests and non-default token locations.
-- The loopback OAuth callback uses `localhost:8080`; keep the redirect URL and callback listener aligned.
-- Validate fixture paths before opening them: `NewFakeClient` rejects symlinks and non-regular files.
-- Use runtime address construction through `defang.MkEmail` for source strings that contain email addresses. The custom lint enforces this for non-test Go/JSON files.
-
-## Comments and documentation
-
-- Explain why a boundary or invariant exists, not only what a line does.
-- Use exact file paths and PRD/safety references when documenting behavior that future changes could weaken.
-- Keep user-facing status honest: the real read path and OAuth flow are implemented, but RealClient mutation remains stubbed.
+- Non-obvious decisions land in `.plans/implement-notes.md` as dated,
+  categorized entries (blocker/issue/finding/learning), appended (newest at
+  bottom), never overwritten.
+- Planning docs live in `.planning/` (e.g. real-Gmail and live-mutation test
+  plans).
+- `AGENTS.md` is the canonical agent guide and is kept in sync with the
+  README.

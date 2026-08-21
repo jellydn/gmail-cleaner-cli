@@ -13,6 +13,7 @@ import (
 
 	"gclean/internal/config"
 	"gclean/internal/engine"
+	"gclean/internal/format"
 	"gclean/internal/storage"
 )
 
@@ -101,9 +102,9 @@ func newStatsCmd(out, errOut io.Writer) *cobra.Command {
 
 			tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 			_, _ = fmt.Fprintf(tw, "Total messages\t%d\n", rep.TotalMessages)
-			_, _ = fmt.Fprintf(tw, "Estimated storage\t%s\n", humanBytes(rep.EstimatedStorage))
-			_, _ = fmt.Fprintf(tw, "Potential reclaim\t%s\n", humanBytes(rep.PotentialReclaim))
-			_, _ = fmt.Fprintf(tw, "Largest sender\t%s (%s, %d msgs)\n", rep.LargestSender.Email, humanBytes(rep.LargestSender.Bytes), rep.LargestSender.Count)
+			_, _ = fmt.Fprintf(tw, "Estimated storage\t%s\n", format.HumanBytes(rep.EstimatedStorage))
+			_, _ = fmt.Fprintf(tw, "Potential reclaim\t%s\n", format.HumanBytes(rep.PotentialReclaim))
+			_, _ = fmt.Fprintf(tw, "Largest sender\t%s (%s, %d msgs)\n", rep.LargestSender.Email, format.HumanBytes(rep.LargestSender.Bytes), rep.LargestSender.Count)
 			_, _ = fmt.Fprintf(tw, "Newsletters\t%d\n", rep.NewsletterCount)
 			_, _ = fmt.Fprintf(tw, "Notifications\t%d\n", rep.NotificationCount)
 			_, _ = fmt.Fprintf(tw, "Attachments >10MB\t%d\n", rep.AttachmentsOver10MB)
@@ -165,7 +166,7 @@ func newDryRunCmd(out, errOut io.Writer) *cobra.Command {
 			rep := p.Report()
 			_, _ = fmt.Fprintln(out, "──────────────────────────")
 			_, _ = fmt.Fprintf(out, "Safe to delete\t%d messages\n", rep.DeleteCount)
-			_, _ = fmt.Fprintf(out, "Recover\t%s\n", humanBytes(rep.RecoverBytes))
+			_, _ = fmt.Fprintf(out, "Recover\t%s\n", format.HumanBytes(rep.RecoverBytes))
 			_, _ = fmt.Fprintf(out, "Will keep\t%d (contacts, starred, important, replied, recent, ignored)\n", rep.KeepCount)
 			_, _ = fmt.Fprintf(out, "Will archive\t%d\n", rep.ArchiveCount)
 			_, _ = fmt.Fprintln(out, "──────────────────────────")

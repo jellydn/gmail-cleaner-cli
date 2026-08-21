@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"gclean/internal/format"
 	"gclean/internal/models"
 	"gclean/internal/storage"
 )
@@ -39,21 +40,12 @@ func sliceControl(out io.Writer, reasons []string) error {
 	for _, c := range rows {
 		for _, r := range reasons {
 			if c.ReasonCode == r {
-				_, _ = fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", c.Message.ID, c.Message.Sender.Email, truncate(c.Message.Subject, 60), humanBytes(c.Message.Size))
+				_, _ = fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", c.Message.ID, c.Message.Sender.Email, format.Truncate(c.Message.Subject, 60), format.HumanBytes(c.Message.Size))
 				break
 			}
 		}
 	}
 	return nil
-}
-
-// truncate shortens a string and adds an ellipsis on overflow. Used for
-// rendering subjects in fixed-width tabwriter columns.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
 }
 
 // --- Subcommand constructors -------------------------------------------
@@ -86,7 +78,7 @@ func newSenderCmd(out, errOut io.Writer) *cobra.Command {
 				if filter != "" && !strings.Contains(strings.ToLower(s.Email), strings.ToLower(filter)) {
 					continue
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\n", s.Email, s.Count, humanBytes(s.Bytes))
+				_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\n", s.Email, s.Count, format.HumanBytes(s.Bytes))
 			}
 			_ = tw.Flush()
 			return nil
@@ -116,7 +108,7 @@ func newAttachmentsCmd(out, errOut io.Writer) *cobra.Command {
 				if len(dateStr) > 10 {
 					dateStr = dateStr[:10]
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.ID, r.SenderEmail, truncate(r.Subject, 60), humanBytes(r.Size), dateStr)
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.ID, r.SenderEmail, format.Truncate(r.Subject, 60), format.HumanBytes(r.Size), dateStr)
 			}
 			_ = tw.Flush()
 			return nil

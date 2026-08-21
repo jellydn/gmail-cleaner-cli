@@ -1,69 +1,73 @@
-# STACK
+# STACK.md — gclean technology stack
 
-Current technology stack and local development surfaces for `gclean`.
+## Language & runtime
 
-## Runtime and language
+- **Go 1.26.4** (`go.mod`). Single-module repo, module name `gclean`.
+- No CGO: SQLite is pure-Go via `modernc.org/sqlite`, so builds are fully
+  cross-compilable and CI-friendly.
+- CLI framework: `github.com/spf13/cobra v1.10.2` (`internal/cli/`).
+- Logging: standard library `log/slog` (TextHandler to stderr), set up in
+  `cmd/gclean/main.go`, used by the real Gmail client's retry/backoff paths.
 
-- **Go 1.26.4** — declared in `go.mod:1-3`; all application, CLI, persistence, OAuth, and TUI code is Go.
-- **CLI executable** — `cmd/gclean/main.go` configures `log/slog`, constructs the Cobra root command, and executes it with a context.
-- **CGO-free SQLite** — `modernc.org/sqlite` is used by `internal/storage/sqlite.go`, avoiding a native SQLite toolchain.
-- **No message bodies** — `models.Message` deliberately stores metadata, headers, labels, and a snippet, but not full bodies (`internal/models/models.go:9-22`).
+## Direct dependencies (`go.mod`)
 
-## Direct dependencies
+| Module | Version | Purpose |
+| ------ | ------- | ------- |
+| `github.com/spf13/cobra` | v1.10.2 | Command tree for every subcommand |
+| `gopkg.in/yaml.v3` | v3.0.1 | Config file parsing (`internal/config/`) |
+| `modernc.org/sqlite` | v1.56.0 | Pure-Go SQLite driver (`internal/storage/`) |
+| `golang.org/x/oauth2` | v0.36.0 | OAuth2 token flow (`internal/gmailclient/oauth.go`) |
+| `google.golang.org/api` | v0.293.0 | Gmail API client (`internal/gmailclient/real.go`) |
+| `charm.land/bubbletea/v2` | v2.0.8 | TUI framework (`internal/tui/app.go`) |
+| `charm.land/lipgloss/v2` | v2.0.6 | TUI styling (`internal/tui/app.go`) |
 
-| Dependency | Version | Usage |
-| --- | --- | --- |
-| `github.com/spf13/cobra` | `v1.10.2` | Root command and subcommands in `internal/cli/` |
-| `github.com/charmbracelet/bubbletea` | `v1.3.10` | Interactive sender-selection TUI in `internal/tui/app.go` |
-| `github.com/charmbracelet/lipgloss` | `v1.1.0` | TUI styling and terminal rendering |
-| `gopkg.in/yaml.v3` | `v3.0.1` | YAML config parsing through `internal/config/yaml.go` |
-| `modernc.org/sqlite` | `v1.53.0` | Pure-Go SQLite driver in `internal/storage/sqlite.go` |
-| `google.golang.org/api` | `v0.287.1` indirect in `go.mod` | Gmail API service used by `internal/gmailclient/real.go` and `oauth.go` |
-| `golang.org/x/oauth2` | indirect in `go.mod` | OAuth config, token exchange, and refresh token source |
+Notable indirect deps: `google.golang.org/grpc`, `golang.org/x/net`,
+`modernc.org/libc`, OpenTelemetry SDK (pulled in by the Google API client),
+`cloud.google.com/go/auth` (OAuth transport).
 
-The standard library supplies `database/sql`, `encoding/json`, `net/http`, `net/mail`, `log/slog`, `text/tabwriter`, signal handling, and filesystem access.
+## Deliberately absent
 
-## Developer commands
+- **No Viper** — config is parsed with `yaml.v3` directly. Viper would add
+  30+ transitive deps for a single YAML file. Documented in
+  `internal/config/config.go` and the README; swapping it in is a 1-file
+  change.
+- **No fsnotify** — `gclean dev` watch mode polls mtimes on a 2s interval
+  instead of using a filesystem watcher (intentional, see
+  `internal/cli/dev.go`).
+- **No body fetching** — the local store is metadata-only (privacy default,
+  `internal/models/models.go`).
 
-`justfile` is the preferred command runner:
+## Build & config tooling
 
-```text
-just check          # vet + build + lint + test
-just check-quick    # vet + build + test
-just test-pkg pkg="internal/engine/"
-just test-integration
-just e2e
-```
+- **`just`** is the preferred task runner (`justfile`); a **`make`** mirror
+  exists (`Makefile`). Recipes: `check` (vet+build+lint+test),
+  `check-quick`, `e2e` (fixture-driven end-to-end), `lint-emails`.
+- **Renovate** (`renovate.json`) manages dependency PRs (recent commits show
+  automated `fix(deps)` bumps).
+- **GitHub Actions** (`./.github/workflows/lint-emails.yml`) runs the
+  email-literal lint on push/PR.
+- **pre-commit** (`.pre-commit-config.yaml`) runs `go vet`, `go build`,
+  `golangci-lint`, plus the email-literal lint as a local hook.
+- `golangci-lint` is optional in the lint recipes (skipped with a notice if
+  not installed).
 
-Equivalent Make targets are in `Makefile`: `lint-emails`, `lint`, `build`, `test`, and `vet`. `golangci-lint` is optional in the aggregate lint recipe and is skipped when unavailable.
+## Configuration & runtime state (env-var driven)
 
-## Validation and repository hooks
-
-- `go vet ./...`
-- `go build ./...`
-- `go test ./...`
-- `scripts/lint-email-literals.sh` — rejects raw email literals in non-test Go/JSON source.
-- `.pre-commit-config.yaml` runs standard whitespace/YAML/large-file hooks plus Go vet, build, golangci-lint, and the email-literal script.
-- `.github/workflows/lint-emails.yml` runs the email-literal check on pushes to `main` and pull requests.
-
-## Configuration and runtime paths
-
-| Environment variable | Default | Purpose |
-| --- | --- | --- |
-| `GCLEAN_DB_PATH` | `~/.config/gclean/gclean.db` | SQLite metadata database |
-| `GCLEAN_CONFIG_PATH` | `$XDG_CONFIG_HOME/gclean/config.yaml` or `~/.config/gclean/config.yaml` | YAML rules |
-| `GCLEAN_CREDENTIALS_PATH` | `~/.config/gclean/credentials.json` | Google OAuth client credentials |
+| Env var | Default | Purpose |
+| ------- | ------- | ------- |
+| `GCLEAN_DB_PATH` | `~/.config/gclean/gclean.db` | SQLite DB path (`internal/cli/cli.go`) |
+| `GCLEAN_CREDENTIALS_PATH` | `~/.config/gclean/credentials.json` | Gmail OAuth client creds |
 | `GCLEAN_TOKEN_PATH` | `~/.config/gclean/token.json` | Persisted OAuth token (`internal/gmailclient/oauth.go`) |
-| `GCLEAN_UNDO_CACHE` | `~/.config/gclean/undo-cache.json` | Pre-trash records for undo |
+| `GCLEAN_SELECTION_PATH` | `~/.config/gclean/tui-selection.json` | TUI sender cohort (`internal/cli/pipeline.go`) |
+| `GCLEAN_CONFIG_PATH` | `~/.config/gclean/config.yaml` (honors `XDG_CONFIG_HOME`) | YAML rule config (`internal/config/config.go`) |
+| `GCLEAN_UNDO_CACHE` | `~/.config/gclean/undo-cache.json` | Pre-trash undo records (`internal/cli/pipeline.go`) |
 
-`config.Load()` creates the default YAML configuration on first use (`internal/config/config.go:65-90`). SQLite schema creation happens during `storage.Open()` (`internal/storage/sqlite.go:22-55`).
+Config file is auto-created on first run with defaults (`.internal/config/config.go`).
 
-## Build status and implementation boundary
+## Data files
 
-The local fixture pipeline is end-to-end: fake Gmail input → classification → SQLite → planning → reporting. Real Gmail authentication is implemented through `gclean login`, and `RealClient.ListMessages` fetches metadata through the Gmail API (`internal/gmailclient/real.go:23-95`). The mutating RealClient methods still return `ErrNotImplemented` (`internal/gmailclient/real.go:98-106`), so production Trash/restore/purge is not complete.
-
-## Design choices
-
-- YAML rather than Viper: `internal/config/config.go:5-7` explicitly avoids Viper's larger dependency graph.
-- Polling rather than filesystem notifications: `internal/cli/dev.go:18-25` uses a configurable two-second mtime poll for the development watcher.
-- Runtime email assembly through `defang.MkEmail`: `internal/defang/defang.go` protects source strings from the repository's email-obfuscation failure mode.
+- `testdata/fixtures/messages.json` — 40-message Gmail-shaped fixture corpus
+  used by `--fixtures` and tests. Sibling `messages.README.md` documents its
+  structural requirements.
+- `testdata/fixtures/messages.README.md` — ground-truth doc for the fixture
+  (JSON can't hold comments).

@@ -11,13 +11,13 @@
 //	dev.go       — dev (develop mode with file watching)
 //
 // cli.go itself owns the root command (Build) and the cross-cutting helpers
-// every other file needs (path resolution, size formatting, client
-// resolution). Handlers are intentionally thin — heavy logic lives in
-// internal/engine, internal/storage, and internal/gmailclient.
+// every other file needs (path resolution, client resolution). Handlers are
+// intentionally thin — heavy logic lives in internal/engine,
+// internal/storage, and internal/gmailclient. Output formatting helpers
+// (humanBytes, truncate) live in internal/format.
 package cli
 
 import (
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -105,22 +105,4 @@ func credentialsPath() string {
 	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".config", "gclean", "credentials.json")
-}
-
-// humanBytes formats an int64 byte count for human display.
-// 1024-base, KMGTPE units. Used by stats, dry-run, attachments, sender,
-// demo, and the TUI confirmation summary — almost every output that
-// prints a size.
-func humanBytes(n int64) string {
-	const k = 1024
-	if n < k {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(k), 0
-	for n2 := n / k; n2 >= k; n2 /= k {
-		div *= k
-		exp++
-	}
-	units := "KMGTPE"
-	return fmt.Sprintf("%.2f %cB", float64(n)/float64(div), units[exp])
 }

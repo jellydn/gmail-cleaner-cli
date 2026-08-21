@@ -1,106 +1,127 @@
-# ARCHITECTURE
+# ARCHITECTURE.md — gclean architecture
 
-`gclean` is a safety-oriented CLI organised around a Gmail client seam, a pure decision engine, and a local metadata store.
+## Overview
 
-## Layer model
+gclean is a Go CLI that reclaims Gmail storage safely. The core idea is a
+**local-first, safe-by-default pipeline**: pull message *metadata* from
+Gmail, classify and plan against local rules, and only ever move the
+"delete cohort" to Trash (recoverable), with an undo cache so the operation
+is reversible. The hard safety rule (PRD §15): **never delete a non-junk
+message even if a delete rule matches**.
 
-```text
-cmd/gclean
-    ↓
-internal/cli  ───────→ config
-    ↓      ↓             ↓
-engine ←──┴───────→ storage
-    ↓                  ↑
-models          gmailclient
-                       ↑
-                 FakeClient / RealClient
+## Layering / dependency direction
 
-internal/tui reads storage.SenderSafety
+```
+cmd/gclean (main, slog)
+   └── internal/cli        (Cobra command tree — thin handlers)
+        ├── internal/engine    (classifier, protector, planner, DSL evaluator, pipeline)
+        ├── internal/storage   (SQLite + undo cache + selection + aggregations)
+        ├── internal/config    (YAML → engine.RuleConfig)   [config → engine only]
+        ├── internal/gmailclient (Client interface + Fake + Real + OAuth)
+        ├── internal/models    (cross-package types)
+        ├── internal/tui       (Bubble Tea UI)
+        └── internal/defang    (MkEmail runtime address assembly)
 ```
 
-- `cmd/gclean` owns process startup and top-level error presentation.
-- `internal/cli` owns Cobra wiring, environment/path resolution, orchestration, and output formatting.
-- `internal/config` owns YAML I/O and compiles user rules into engine types.
-- `internal/engine` owns classification, protection, rule evaluation, planning, and the scan/plan/apply pipeline stages.
-- `internal/storage` owns SQLite metadata, aggregations, and undo-cache serialization.
-- `internal/gmailclient` owns the Gmail API boundary and its fake.
-- `internal/models` contains the shared vocabulary.
-- `internal/tui` is an experimental presentation layer over sender safety rows.
+Key invariants:
+- `internal/engine` is **pure and deterministic** — no I/O, no clocks beyond
+  what's passed in. It declares its own narrow `Gmailer` interface
+  (`internal/engine/pipeline.go`) so it never imports `gmailclient`.
+- `internal/config` imports `engine` (to build `RuleConfig`/`KeepConfig`),
+  but `engine` never imports `config` — one-way dependency
+  (`internal/config/config.go`).
+- Everything depends on `internal/models` for shared types; field names
+  mirror the Gmail API JSON shape so one struct decodes real and fixture
+  responses.
 
-## Entry points
+## The pipeline seam (`internal/engine/pipeline.go`)
 
-- Binary: `cmd/gclean/main.go:12-21`.
-- Root command: `internal/cli/cli.go:37-78`.
-- Client selection: `internal/cli/cli.go:82-88`; `--fixtures` selects `FakeClient`, otherwise `RealClient` is constructed.
-- Command groups: `internal/cli/auth.go`, `pipeline.go`, `meta.go`, `insights.go`, `demo.go`, and `dev.go`.
+The scan→plan→trash flow is `engine.Pipeline`, built from composable
+`Stage` functions. The CLI owns store open/close and client/config/cache
+resolution; the pipeline holds already-resolved dependencies.
 
-## Scan flow
+- `ScanStages()` → `fetchAndClassify`: `ListMessages` → `Classify` per
+  message → `Store.Upsert`.
+- `PlanStages()` → `loadPlan`: read classified rows → apply TUI selection →
+  `Plan()` → write verdicts back. **No Gmail I/O.**
+- `ApplyStages()` → `applyTrash`: write undo cache **first** (fatal on
+  error), then `TrashMessages`, then `Store.MarkTrashed`. The **only**
+  Gmail-mutating stage.
 
-```text
-scan --fixtures PATH
-  → cli.newScanCmd
-  → resolveClient
-  → FakeClient.ListMessages / RealClient.ListMessages
-  → engine.Pipeline.ScanStages
-  → Classify each models.Message
-  → storage.Store.Upsert
-  → SQLite messages table
-```
+## Decision flow — `engine.Plan` (`internal/engine/planner.go`)
 
-The scan stage is `engine.Pipeline.fetchAndClassify` (`internal/engine/pipeline.go:94-121`). The classifier prioritises noreply local parts, known vendor domains, RFC822 bulk/list headers, then Gmail category labels (`internal/engine/classifier.go:15-86`).
+Per-message order of operations (safety-critical seam):
 
-## Planning flow
+1. Sender not in TUI selection → `VerdictKeep` (`selection_excluded`).
+2. Domain in `ignore:` → `VerdictProtected` (`ignored_domain`).
+3. `Protect()` wins (starred/important/sent/contact/replied/recent/whitelist)
+   → `VerdictProtected`.
+4. Config `keep:` rule match → `VerdictKeep`.
+5. Config `archive:` rule match → `VerdictArchive`.
+6. Config `delete:` rule match → `VerdictDelete` **only if classified junk**;
+   otherwise `VerdictKeep` (`delete_rule_refused_non_junk`).
+7. Default → `VerdictKeep`.
 
-```text
-dry-run or clean
-  → config.Load
-  → Document.CompileFull
-  → storage.AllClassified
-  → engine.Plan
-  → storage.SetVerdict
-  → report rendered by CLI
-```
+Decisions are sorted by size DESC (largest deletes first) for the report.
 
-`engine.Plan` is the safety-critical decision seam (`internal/engine/planner.go:40-145`). Its order is:
+## Classification (`internal/engine/classifier.go`)
 
-1. ignored sender domain → protected;
-2. `Protect` result → protected;
-3. keep rule → keep;
-4. archive rule → archive;
-5. delete rule only deletes classified junk;
-6. otherwise keep.
+Signal priority: **noreply local-part prefix > known vendor domains > RFC822
+header signals (List-Unsubscribe, List-ID, Precedence: bulk|list|junk,
+Auto-Submitted) > Gmail categories** (PROMOTIONS/SOCIAL/UPDATES/FORUMS).
+Each yields a stable `ReasonCode` string (`internal/models/models.go`).
 
-A matching delete rule on a non-junk message produces `delete_rule_refused_non_junk`, preserving the project's central safety invariant.
+## Protection (`internal/engine/protector.go`)
 
-## Apply flow
+`Protect` applies the §6 keep profile: hard labels first (STARRED/IMPORTANT/
+SENT), then identity (REPLIED label / IsContact), then the recent window
+(`recent_days`), then the domain whitelist. First hit wins.
 
-`clean --yes` runs `PlanStages()` followed by `ApplyStages()` (`internal/cli/pipeline.go:197-240`). `engine.Pipeline.applyTrash` collects delete decisions, calls `Client.TrashMessages`, removes the rows from SQLite, and writes an integrity-checked undo cache (`internal/engine/pipeline.go:143-190`). This is the only pipeline stage allowed to mutate Gmail.
+## Gmail client seam (`internal/gmailclient/client.go`)
 
-The current real client still returns `ErrNotImplemented` for mutation. The fake client models the operation in memory, so fixture-driven local flows can exercise the command shape without network access.
+`Client` interface: `ListMessages`, `TrashMessages`, `EmptyTrash`,
+`RestoreFromTrash`. Two implementations:
+- `FakeClient` — fixture-driven, in-memory trash state, no network
+  (`fake.go`). Rejects symlinked/non-regular fixture paths.
+- `RealClient` — OAuth-backed, retrying, paginating (`real.go`).
 
-`undo` loads the cache, calls `RestoreFromTrash`, restores records into SQLite, and removes the cache (`internal/cli/pipeline.go:273-315`). `purge` calls `EmptyTrash` and removes the cache, but the real operation is currently stubbed.
+The engine uses the narrower `Gmailer` interface; the CLI resolves the
+concrete client via `resolveClient` (`--fixtures` wins,
+`internal/cli/cli.go`).
 
-## Reporting flow
+## Storage (`internal/storage`)
 
-`storage.Store.Aggregations()` performs one full table scan and produces:
+- `sqlite.go` — single `messages` table + indexes; `Upsert` (idempotent by
+  ID), `SetVerdict`, `AllClassified`, `MarkTrashed` (transactional delete),
+  `RestoreTrashed` (transactional re-insert).
+- `stats.go` — `Aggregations()` does **one** table scan producing the
+  `StatsReport`, per-sender volume ranking, and per-sender safety split
+  (capped at 200 rows for the TUI).
+- `undocache.go` — versioned, checksummed, atomically-written undo records.
+- `selection.go` — TUI sender cohort, atomically-written, legacy-format
+  compatible.
 
-- `models.StatsReport` for `stats`;
-- sender volume rows for `sender`;
-- `SenderSafety` rows for the TUI;
-- category/year, newsletter, notification, attachment, and reclaim rollups.
+## CLI command surface (`internal/cli/`)
 
-Read-only command handlers in `internal/cli/insights.go` and `pipeline.go` format these values with `text/tabwriter` and `humanBytes`.
+- `auth.go` — `login`, `logout`.
+- `pipeline.go` — `scan`, `stats`, `dry-run`, `clean`, `purge`, `undo`
+  (thin adapters over `engine.Pipeline`).
+- `insights.go` — `sender`, `attachments`, `newsletters`, `receipts` +
+  `saveSelection`.
+- `meta.go` — `rules`, `config`, `tui`.
+- `demo.go` — `demo` (self-contained TUI preview, no I/O).
+- `dev.go` — `dev` (polling watch-mode pipeline runner for fixture dev).
 
-## Development watcher
+`Build(stdout, stderr io.Writer)` injects test buffers; every subcommand is
+registered there, and `TestBuild_Help` locks the registration.
 
-`gclean dev` (`internal/cli/dev.go`) invokes the real Cobra command path for `scan`, `stats`, and `dry-run`. In one-shot mode it runs once; in watch mode it polls fixture and config mtimes, handles missing files as recoverable states, and cancels on SIGINT/SIGTERM.
+## TUI (`internal/tui/app.go`)
 
-## Abstractions and invariants
+Bubble Tea `Model` with headless-testable `Update` (no tea runtime needed).
+Pre-selects senders with ≥1 delete candidate; commits write the selection
+file via `saveSelection`.
 
-- `gmailclient.Client` keeps network implementation replaceable.
-- `engine.Gmailer` narrows that dependency for pipeline stages without importing the concrete Gmail package.
-- `engine.Stage` is a function type; `Pipeline.Run` executes stages in order and stops on error.
-- `models.Message` intentionally excludes bodies.
-- `clean` and `purge` require explicit `--yes`.
-- The planner refuses to delete non-junk messages even if a delete rule matches.
-- Runtime email construction is centralised in `internal/defang` to protect source integrity.
+## Entry point
+
+`cmd/gclean/main.go`: slog TextHandler → `cli.Build(nil, nil).ExecuteContext`
+→ prints `error: ...` to stderr and exits 1 on failure.

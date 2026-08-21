@@ -11,6 +11,7 @@ import (
 
 	"gclean/internal/config"
 	"gclean/internal/engine"
+	"gclean/internal/format"
 	"gclean/internal/storage"
 	"gclean/internal/tui"
 )
@@ -153,7 +154,7 @@ func newTuiCmd(out, errOut io.Writer) *cobra.Command {
 			}
 			senders, msgs, bytes := final.SelectionStats()
 			_, _ = fmt.Fprintf(out, "\nSelection confirmed: %d senders \u00b7 %d messages \u00b7 %s recoverable.\nSaved to ~/.config/gclean/tui-selection.json.\n",
-				senders, msgs, humanBytes(bytes))
+				senders, msgs, format.HumanBytes(bytes))
 			_, _ = fmt.Fprintln(out, "Run `gclean dry-run` to review the selected cohort, then `gclean clean --yes` to apply it.")
 			return nil
 		},

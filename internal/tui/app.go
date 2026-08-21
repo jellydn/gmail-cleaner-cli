@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"gclean/internal/format"
 	"gclean/internal/storage"
 )
 
@@ -178,7 +179,7 @@ func (m Model) mainView() string {
 	sb.WriteString(headerStyle.Render(fmt.Sprintf(
 		"── %d senders · %s recoverable · EXPERIMENTAL ──",
 		len(m.rows),
-		humanBytes(totalDeleteBytes(m.rows)),
+		format.HumanBytes(totalDeleteBytes(m.rows)),
 	)))
 	sb.WriteString("\n\n")
 
@@ -195,9 +196,9 @@ func (m Model) mainView() string {
 		}
 		line := fmt.Sprintf("%s%s %-40s  %5d msgs  %s",
 			cursor, sel,
-			truncate(r.Email, 40),
+			format.Truncate(r.Email, 40),
 			r.DeleteCount,
-			humanBytes(r.DeleteBytes),
+			format.HumanBytes(r.DeleteBytes),
 		)
 		if i == m.cursor {
 			line = cursorStyle.Render(line)
@@ -219,7 +220,7 @@ func (m Model) commitSummaryView() string {
 	senders, msgs, bytes := m.SelectionStats()
 	title := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#04B575")).Render("selection confirmed.")
 	return fmt.Sprintf("\n%s\n%d senders · %d messages · %s recoverable.\n",
-		title, senders, msgs, humanBytes(bytes))
+		title, senders, msgs, format.HumanBytes(bytes))
 }
 
 func totalDeleteBytes(rows []SenderRow) int64 {
@@ -228,27 +229,6 @@ func totalDeleteBytes(rows []SenderRow) int64 {
 		b += r.DeleteBytes
 	}
 	return b
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n-1] + "…"
-}
-
-func humanBytes(n int64) string {
-	const k = 1024
-	if n < k {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(k), 0
-	for n2 := n / k; n2 >= k; n2 /= k {
-		div *= k
-		exp++
-	}
-	units := "KMGTPE"
-	return fmt.Sprintf("%.2f %cB", float64(n)/float64(div), units[exp])
 }
 
 // Run wraps tea.NewProgram. Exposed so the CLI doesn't need to import

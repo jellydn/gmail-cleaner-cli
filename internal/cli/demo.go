@@ -6,6 +6,7 @@ import (
 	"text/tabwriter"
 
 	"gclean/internal/defang"
+	"gclean/internal/format"
 	"gclean/internal/models"
 	"gclean/internal/storage"
 
@@ -112,7 +113,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 			tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 			_, _ = fmt.Fprintln(tw, "SENDER\tMESSAGES\tSTORAGE\tSAFE-TO-DELETE")
 			for _, s := range samples {
-				_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%d\n", s.Email, s.TotalCount, humanBytes(s.TotalBytes), s.DeleteCount)
+				_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%d\n", s.Email, s.TotalCount, format.HumanBytes(s.TotalBytes), s.DeleteCount)
 			}
 			_ = tw.Flush()
 			_, _ = fmt.Fprintln(out)
