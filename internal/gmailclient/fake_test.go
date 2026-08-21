@@ -1,6 +1,7 @@
 package gmailclient
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -44,6 +45,24 @@ func TestFakeClient_QueryUnsupportedTokenErrors(t *testing.T) {
 	// silently fall back to a subject substring.
 	if _, err := c.ListMessages("older_than:30d", 0); err == nil {
 		t.Fatal("unsupported query token must error")
+	}
+}
+
+func TestFakeClient_InTrash_ReturnsTrashedSubset(t *testing.T) {
+	c := NewFakeClientFromMessages([]*models.Message{
+		{ID: "a", Subject: "a", Date: time.Now()},
+		{ID: "b", Subject: "b", Date: time.Now()},
+		{ID: "c", Subject: "c", Date: time.Now()},
+	})
+	if err := c.TrashMessages([]string{"a", "c"}); err != nil {
+		t.Fatal(err)
+	}
+	in, err := c.InTrash([]string{"a", "b", "c", "d"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(in, ","); got != "a,c" {
+		t.Fatalf("InTrash = %q, want a,c", got)
 	}
 }
 

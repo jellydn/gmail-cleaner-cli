@@ -7,14 +7,19 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"gclean/internal/config"
 	"gclean/internal/defang"
+	"gclean/internal/engine"
+	"gclean/internal/models"
 	"gclean/internal/storage"
 )
 
@@ -562,5 +567,248 @@ func TestDevCommand_OneShotMode_RendersPipeline(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("dev output missing %q (one of the three pipeline subcommands didn't run)\nbody:\n%s", want, body)
 		}
+	}
+}
+
+// --------------------------------------------------------------------------
+// Mutation-path reconciliation tests.
+//
+// partialClient simulates a Gmail backend that fails a mutation partway and
+// reports the actual server-side state via InTrash, so the reconcile paths in
+// clean / undo / purge can be tested without network.
+// --------------------------------------------------------------------------
+
+// partialClient implements gmailclient.Client with controllable partial
+// failures.
+//
+//   - failTrashAfter >= 0: TrashMessages trashes only the first N ids then
+//     errors (-1 disables).
+//   - failRestoreAfter >= 0: RestoreFromTrash restores only the ids before
+//     that index then errors.
+//   - failEmpty: EmptyTrash permanently deletes every id NOT in
+//     failEmptyKeep, then errors (simulating a partial purge).
+//
+// InTrash always reflects the simulated server-side state.
+type partialClient struct {
+	trashed        map[string]bool
+	failTrashAfter int
+	failRestore    int
+	failEmpty      bool
+	failEmptyKeep  map[string]bool
+}
+
+func newPartialClient() *partialClient {
+	return &partialClient{trashed: map[string]bool{}, failTrashAfter: -1, failRestore: -1}
+}
+
+func (c *partialClient) ListMessages(string, int) ([]*models.Message, error) { return nil, nil }
+
+func (c *partialClient) TrashMessages(ids []string) error {
+	if c.failTrashAfter >= 0 {
+		for _, id := range ids[:min(c.failTrashAfter, len(ids))] {
+			c.trashed[id] = true
+		}
+		return errors.New("simulated trash failure")
+	}
+	for _, id := range ids {
+		c.trashed[id] = true
+	}
+	return nil
+}
+
+func (c *partialClient) EmptyTrash() error {
+	if c.failEmpty {
+		for id := range c.trashed {
+			if !c.failEmptyKeep[id] {
+				delete(c.trashed, id)
+			}
+		}
+		return errors.New("simulated empty-trash failure")
+	}
+	c.trashed = map[string]bool{}
+	return nil
+}
+
+func (c *partialClient) RestoreFromTrash(ids []string) error {
+	if c.failRestore >= 0 {
+		for _, id := range ids[:min(c.failRestore, len(ids))] {
+			delete(c.trashed, id)
+		}
+		return errors.New("simulated restore failure")
+	}
+	for _, id := range ids {
+		delete(c.trashed, id)
+	}
+	return nil
+}
+
+func (c *partialClient) InTrash(ids []string) ([]string, error) {
+	var in []string
+	for _, id := range ids {
+		if c.trashed[id] {
+			in = append(in, id)
+		}
+	}
+	return in, nil
+}
+
+// seedJunkStore writes two old, junk messages from the same sender so the
+// planner's delete rule matches both and Protect() does not protect them.
+func seedJunkStore(t *testing.T, dbPath string, ids ...string) {
+	t.Helper()
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	for _, id := range ids {
+		m := &models.Message{
+			ID: id, ThreadID: "t" + id, Subject: id,
+			Date:    time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+			Size:    1000,
+			Sender:  models.Sender{Email: defang.MkEmail("x", "example.com")},
+			Headers: map[string]string{},
+		}
+		if err := store.Upsert(storage.FromClassified(&models.Classified{Message: m, IsJunk: true, ReasonCode: models.ReasonNewsletter}, models.VerdictKeep)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// junkDeleteDoc is a config that matches every seeded junk message for
+// deletion while disabling every protect signal.
+func junkDeleteDoc() config.Document {
+	return config.Document{
+		Keep:   engine.KeepConfig{},
+		Delete: []string{"from:" + defang.MkEmail("x", "example.com")},
+	}
+}
+
+func TestClean_PartialTrashReconcilesCacheAndStore(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "gclean.db")
+	cachePath := filepath.Join(tmp, "undo-cache.json")
+	t.Setenv("GCLEAN_DB_PATH", dbPath)
+	t.Setenv("GCLEAN_UNDO_CACHE", cachePath)
+	t.Setenv("GCLEAN_SELECTION_PATH", filepath.Join(tmp, "selection.json"))
+
+	seedJunkStore(t, dbPath, "m1", "m2")
+
+	client := newPartialClient()
+	client.failTrashAfter = 1 // only the first message reaches Trash
+
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	p, err := buildPipeline(store, client, junkDeleteDoc(), &bytes.Buffer{}, &bytes.Buffer{}, cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Run(p.PlanStages()...); err != nil {
+		t.Fatal(err)
+	}
+	err = p.Run(p.ApplyStages()...)
+	if err == nil || !strings.Contains(err.Error(), "partially applied") {
+		t.Fatalf("want partial-failure error, got %v", err)
+	}
+
+	// The undo cache must be trimmed to the message that actually reached Trash.
+	records, err := storage.LoadUndoCache(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].ID != "m1" {
+		t.Fatalf("cache records = %+v, want only m1", records)
+	}
+	// The trashed message is gone from the store; the untrashed one is kept.
+	remaining, err := store.AllClassified()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 || remaining[0].Message.ID != "m2" {
+		t.Fatalf("store remaining = %+v, want only m2", remaining)
+	}
+}
+
+func TestUndo_PartialRestoreReconciles(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "gclean.db")
+	cachePath := filepath.Join(tmp, "undo-cache.json")
+
+	store, err := storage.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	records := []storage.StoredMessage{
+		{ID: "m1", SenderEmail: defang.MkEmail("x", "example.com"), Subject: "m1", Date: "2020-01-01T00:00:00Z", Size: 1000, IsJunk: true, JunkReason: models.ReasonNewsletter, Verdict: int(models.VerdictDelete)},
+		{ID: "m2", SenderEmail: defang.MkEmail("x", "example.com"), Subject: "m2", Date: "2020-01-01T00:00:00Z", Size: 1000, IsJunk: true, JunkReason: models.ReasonNewsletter, Verdict: int(models.VerdictDelete)},
+	}
+	if err := storage.SaveUndoCache(cachePath, records); err != nil {
+		t.Fatal(err)
+	}
+
+	client := newPartialClient()
+	client.trashed["m1"] = true
+	client.trashed["m2"] = true
+	client.failRestore = 1 // restores the first id, then fails
+
+	err = undoWithReconcile(client, store, records, cachePath)
+	if err == nil || !strings.Contains(err.Error(), "partially applied") {
+		t.Fatalf("want partial-restore error, got %v", err)
+	}
+
+	// The restored message is back in the store; the still-trashed one is not.
+	remaining, err := store.AllClassified()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining) != 1 || remaining[0].Message.ID != "m1" {
+		t.Fatalf("store remaining = %+v, want only m1", remaining)
+	}
+	// The cache is trimmed to the still-trashed message so undo can retry.
+	left, err := storage.LoadUndoCache(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 || left[0].ID != "m2" {
+		t.Fatalf("cache remaining = %+v, want only m2", left)
+	}
+}
+
+func TestPurge_PartialEmptyReconciles(t *testing.T) {
+	tmp := t.TempDir()
+	cachePath := filepath.Join(tmp, "undo-cache.json")
+
+	records := []storage.StoredMessage{
+		{ID: "m1", SenderEmail: defang.MkEmail("x", "example.com"), Subject: "m1", Date: "2020-01-01T00:00:00Z", Size: 1000, IsJunk: true, JunkReason: models.ReasonNewsletter, Verdict: int(models.VerdictDelete)},
+		{ID: "m2", SenderEmail: defang.MkEmail("x", "example.com"), Subject: "m2", Date: "2020-01-01T00:00:00Z", Size: 1000, IsJunk: true, JunkReason: models.ReasonNewsletter, Verdict: int(models.VerdictDelete)},
+	}
+	if err := storage.SaveUndoCache(cachePath, records); err != nil {
+		t.Fatal(err)
+	}
+
+	client := newPartialClient()
+	client.trashed["m1"] = true
+	client.trashed["m2"] = true
+	client.failEmpty = true
+	client.failEmptyKeep = map[string]bool{"m2": true} // m1 purged, m2 still in Trash
+
+	err := purgeWithReconcile(client, records, cachePath)
+	if err == nil || !strings.Contains(err.Error(), "partially applied") {
+		t.Fatalf("want partial-purge error, got %v", err)
+	}
+
+	// The cache is trimmed to the message still in Trash so undo can recover it.
+	left, err := storage.LoadUndoCache(cachePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 1 || left[0].ID != "m2" {
+		t.Fatalf("cache remaining = %+v, want only m2", left)
 	}
 }

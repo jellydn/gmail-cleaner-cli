@@ -211,6 +211,44 @@ func TestRealClient_RestoreFromTrash_UsesUntrash(t *testing.T) {
 	}
 }
 
+func TestRealClient_InTrash_DetectsTrashLabel(t *testing.T) {
+	stubRetryDelay(t, func(int, error) time.Duration { return 0 })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/gmail/v1/users/me/messages/m1" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"m1","labelIds":["INBOX","TRASH"]}`)
+	}))
+	defer server.Close()
+
+	in, err := newHTTPTestClient(t, server).InTrash([]string{"m1"})
+	if err != nil {
+		t.Fatalf("InTrash: %v", err)
+	}
+	if len(in) != 1 || in[0] != "m1" {
+		t.Fatalf("InTrash = %v, want [m1]", in)
+	}
+}
+
+func TestRealClient_InTrash_ExcludesNonTrashed(t *testing.T) {
+	stubRetryDelay(t, func(int, error) time.Duration { return 0 })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"m2","labelIds":["INBOX"]}`)
+	}))
+	defer server.Close()
+
+	in, err := newHTTPTestClient(t, server).InTrash([]string{"m2"})
+	if err != nil {
+		t.Fatalf("InTrash: %v", err)
+	}
+	if len(in) != 0 {
+		t.Fatalf("InTrash = %v, want empty", in)
+	}
+}
+
 func TestRealClient_EmptyTrash_FallsBackToIndividualDeleteOn403(t *testing.T) {
 	stubRetryDelay(t, func(int, error) time.Duration { return 0 })
 	var (
