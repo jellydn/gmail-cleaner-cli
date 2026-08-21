@@ -1,10 +1,8 @@
 package engine
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"gclean/internal/models"
 	"gclean/internal/storage"
@@ -97,20 +95,7 @@ func (p *Pipeline) fetchAndClassify(pl *Pipeline) error {
 	}
 	for _, m := range msgs {
 		c := Classify(m)
-		if err := pl.Store.Upsert(storage.StoredMessage{
-			ID:          m.ID,
-			ThreadID:    m.ThreadID,
-			SenderEmail: m.Sender.Email,
-			SenderName:  m.Sender.Name,
-			IsContact:   m.Sender.IsContact,
-			Subject:     m.Subject,
-			Date:        m.Date.Format(time.RFC3339),
-			Size:        m.Size,
-			Labels:      strings.Join(m.Labels, ","),
-			Headers:     encodeJSON(m.Headers),
-			JunkReason:  c.ReasonCode,
-			IsJunk:      c.IsJunk,
-		}); err != nil {
+		if err := pl.Store.Upsert(storage.FromClassified(&c, models.VerdictKeep)); err != nil {
 			return fmt.Errorf("persist %s: %w", m.ID, err)
 		}
 	}
@@ -155,21 +140,7 @@ func (p *Pipeline) applyTrash(pl *Pipeline) error {
 			continue
 		}
 		ids = append(ids, d.Message.ID)
-		toTrash = append(toTrash, storage.StoredMessage{
-			ID:          d.Message.ID,
-			ThreadID:    d.Message.ThreadID,
-			SenderEmail: d.Message.Sender.Email,
-			SenderName:  d.Message.Sender.Name,
-			IsContact:   d.Message.Sender.IsContact,
-			Subject:     d.Message.Subject,
-			Date:        d.Message.Date.Format(time.RFC3339),
-			Size:        d.Message.Size,
-			Labels:      strings.Join(d.Message.Labels, ","),
-			Headers:     encodeJSON(d.Message.Headers),
-			JunkReason:  d.Classified.ReasonCode,
-			IsJunk:      d.Classified.IsJunk,
-			Verdict:     int(models.VerdictDelete),
-		})
+		toTrash = append(toTrash, storage.FromClassified(d.Classified, models.VerdictDelete))
 	}
 	if len(ids) > 0 {
 		if pl.CachePath != "" {
@@ -211,9 +182,4 @@ func loadSelectedSenders(path string) (map[string]struct{}, error) {
 		selected[sender] = struct{}{}
 	}
 	return selected, nil
-}
-
-func encodeJSON(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
 }
