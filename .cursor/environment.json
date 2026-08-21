@@ -1,0 +1,4 @@
+{
+  "name": "gclean",
+  "install": "bash .cursor/install.sh"
+}
