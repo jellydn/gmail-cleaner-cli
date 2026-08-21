@@ -120,6 +120,22 @@ type SenderVolume struct {
 	Bytes int64
 }
 
+// SenderSafety aggregates one row per distinct sender. DeleteCount/DeleteBytes
+// come from VerdictDelete after a dry-run pass. KeepCount is VerdictKeep +
+// VerdictProtected (messages that won't be touched). Produced by
+// storage.Store.Aggregations (a single messages-table scan) and consumed by
+// the experimental Bubble Tea TUI. Living here (not in storage) keeps the
+// report vocabulary in one home shared by the CLI, storage, and TUI.
+type SenderSafety struct {
+	Email       string
+	TotalCount  int64
+	TotalBytes  int64
+	DeleteCount int64
+	DeleteBytes int64
+	KeepCount   int64
+	Reasons     []string // distinct junk_reason values seen for this sender
+}
+
 // DryRunReport mirrors §5 — what cleanup WOULD do.
 type DryRunReport struct {
 	DeleteCount     int64
