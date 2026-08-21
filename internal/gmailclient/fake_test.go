@@ -7,6 +7,46 @@ import (
 	"gclean/internal/models"
 )
 
+func TestFakeClient_QueryAndSemantics(t *testing.T) {
+	msgs := []*models.Message{
+		{ID: "a", Subject: "alpha", Date: time.Now(), Sender: models.Sender{Email: "x@example.com"}, Labels: []string{"INBOX"}},
+		{ID: "b", Subject: "alpha", Date: time.Now(), Sender: models.Sender{Email: "y@example.com"}, Labels: []string{"INBOX"}},
+		{ID: "c", Subject: "beta", Date: time.Now(), Sender: models.Sender{Email: "x@example.com"}, Labels: []string{"INBOX"}},
+	}
+	c := NewFakeClientFromMessages(msgs)
+
+	// Gmail ANDs search terms: only the message matching BOTH must come back.
+	got, err := c.ListMessages("subject:alpha from:x@example.com", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("AND semantics broken, got %#v", got)
+	}
+
+	// has: matches a header-key substring, aligned with the engine DSL.
+	msgs[0].Headers = map[string]string{"List-Unsubscribe": "<x>"}
+	c = NewFakeClientFromMessages(msgs)
+	got, err = c.ListMessages("has:unsubscribe", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("has: should match header-key substring, got %#v", got)
+	}
+}
+
+func TestFakeClient_QueryUnsupportedTokenErrors(t *testing.T) {
+	msgs := []*models.Message{{ID: "a", Subject: "alpha", Date: time.Now()}}
+	c := NewFakeClientFromMessages(msgs)
+
+	// A token the fake cannot faithfully honor must fail loudly, not
+	// silently fall back to a subject substring.
+	if _, err := c.ListMessages("older_than:30d", 0); err == nil {
+		t.Fatal("unsupported query token must error")
+	}
+}
+
 func TestFakeClient_ListAndTrash(t *testing.T) {
 	msgs := []*models.Message{
 		{ID: "a", Subject: "alpha", Date: time.Now()},

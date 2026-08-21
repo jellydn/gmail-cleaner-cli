@@ -78,8 +78,14 @@ func (f *FakeClient) ListMessages(query string, max int) ([]*models.Message, err
 		if f.trashed[m.ID] {
 			continue
 		}
-		if query != "" && !matchQuery(m, query) {
-			continue
+		if query != "" {
+			ok, err := matchQuery(m, query)
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue
+			}
 		}
 		out = append(out, m)
 		if max > 0 && len(out) >= max {
@@ -126,47 +132,71 @@ func (f *FakeClient) TrashedIDs() []string {
 	return out
 }
 
-// matchQuery supports the slice of Gmail's query language we lean on:
-// from:, subject:, label:, has:, category:, older_than:. Unrecognized tokens
-// fall back to subject substring match.
-func matchQuery(m *models.Message, q string) bool {
+// matchQuery applies the fake's query contract. Terms are ANDed, matching
+// Gmail's search semantics. The supported token subset is documented below;
+// any other token is an error so a query the fake cannot faithfully honor
+// fails loudly instead of silently returning wrong results (the previous
+// implementation ORed tokens and fell back to a subject substring for
+// unknown ones, which could drift from real Gmail behavior).
+func matchQuery(m *models.Message, q string) (bool, error) {
 	tokens := strings.Fields(q)
 	if len(tokens) == 0 {
-		return true
+		return true, nil
 	}
 	for _, t := range tokens {
-		if matchToken(m, t) {
-			return true
+		ok, err := matchToken(m, t)
+		if err != nil {
+			return false, err
+		}
+		if !ok {
+			return false, nil
 		}
 	}
-	return false
+	return true, nil
 }
 
-func matchToken(m *models.Message, t string) bool {
+// matchToken evaluates one query token.
+//
+// Supported tokens:
+//   - from:<substring>    — case-insensitive substring of the From address
+//   - subject:<substring> — case-insensitive substring of the subject
+//   - label:<name>        — exact label match
+//   - category:<name>     — Gmail category (promotions, social, ...)
+//   - has:<header-substr> — case-insensitive substring of a header key
+//     (aligned with the engine DSL's has: predicate)
+//
+// Unsupported tokens return an error.
+func matchToken(m *models.Message, t string) (bool, error) {
 	switch {
 	case strings.HasPrefix(t, "from:"):
-		return strings.Contains(strings.ToLower(m.Sender.Email), strings.ToLower(strings.TrimPrefix(t, "from:")))
+		return strings.Contains(strings.ToLower(m.Sender.Email), strings.ToLower(strings.TrimPrefix(t, "from:"))), nil
 	case strings.HasPrefix(t, "subject:"):
-		return strings.Contains(strings.ToLower(m.Subject), strings.ToLower(strings.TrimPrefix(t, "subject:")))
+		return strings.Contains(strings.ToLower(m.Subject), strings.ToLower(strings.TrimPrefix(t, "subject:"))), nil
 	case strings.HasPrefix(t, "label:"):
 		want := strings.TrimPrefix(t, "label:")
 		for _, l := range m.Labels {
 			if l == want {
-				return true
+				return true, nil
 			}
 		}
+		return false, nil
 	case strings.HasPrefix(t, "category:"):
 		want := "CATEGORY_" + strings.ToUpper(strings.TrimPrefix(t, "category:"))
 		for _, l := range m.Labels {
 			if l == want {
-				return true
+				return true, nil
 			}
 		}
+		return false, nil
 	case strings.HasPrefix(t, "has:"):
-		_, ok := m.Headers[strings.TrimPrefix(t, "has:")]
-		return ok
+		needle := strings.ToLower(strings.TrimPrefix(t, "has:"))
+		for k := range m.Headers {
+			if strings.Contains(strings.ToLower(k), needle) {
+				return true, nil
+			}
+		}
+		return false, nil
 	default:
-		return strings.Contains(strings.ToLower(m.Subject), strings.ToLower(t))
+		return false, fmt.Errorf("fake: unsupported query token %q (supported: from:, subject:, label:, category:, has:)", t)
 	}
-	return false
 }
