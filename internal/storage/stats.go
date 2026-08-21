@@ -17,7 +17,7 @@ import (
 type Aggregations struct {
 	Report      models.StatsReport
 	BySender    []models.SenderVolume // every sender, sorted by bytes desc
-	SendersSafe []SenderSafety        // sorted by DeleteBytes desc, capped at 200
+	SendersSafe []models.SenderSafety // sorted by DeleteBytes desc, capped at 200
 }
 
 // Aggregations scans the messages table once and fills an Aggregations value.
@@ -31,7 +31,7 @@ func (s *Store) Aggregations() (*Aggregations, error) {
 	var (
 		rep        models.StatsReport
 		bySender   = map[string]*models.SenderVolume{}
-		bySafety   = map[string]*SenderSafety{}
+		bySafety   = map[string]*models.SenderSafety{}
 		byCategory = map[string]int64{}
 		topSender  string
 		topCount   int64
@@ -84,7 +84,7 @@ func (s *Store) Aggregations() (*Aggregations, error) {
 
 		ss := bySafety[sender]
 		if ss == nil {
-			ss = &SenderSafety{Email: sender}
+			ss = &models.SenderSafety{Email: sender}
 			bySafety[sender] = ss
 		}
 		ss.TotalCount++
@@ -123,7 +123,7 @@ func (s *Store) Aggregations() (*Aggregations, error) {
 	}
 	sortByBytesDesc(out.BySender)
 
-	out.SendersSafe = make([]SenderSafety, 0, len(bySafety))
+	out.SendersSafe = make([]models.SenderSafety, 0, len(bySafety))
 	for _, ss := range bySafety {
 		out.SendersSafe = append(out.SendersSafe, *ss)
 	}
@@ -138,7 +138,7 @@ func sortByBytesDesc(s []models.SenderVolume) {
 	sort.Slice(s, func(i, j int) bool { return s[i].Bytes > s[j].Bytes })
 }
 
-func sortByDeleteBytesDesc(s []SenderSafety) {
+func sortByDeleteBytesDesc(s []models.SenderSafety) {
 	sort.Slice(s, func(i, j int) bool { return s[i].DeleteBytes > s[j].DeleteBytes })
 }
 

@@ -6,7 +6,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"gclean/internal/storage"
+	"gclean/internal/models"
 )
 
 // mkT joins a local part and domain at runtime with "@" so the literal in
@@ -33,7 +33,7 @@ func mustRun(t *testing.T, fn func() (tea.Model, tea.Cmd)) Model {
 }
 
 func TestNewModel_PreSelectsSendersWithDeleteCount(t *testing.T) {
-	safeties := []storage.SenderSafety{
+	safeties := []models.SenderSafety{
 		{Email: mkT("a", "x.com"), DeleteCount: 5, DeleteBytes: 1000},
 		{Email: mkT("b", "y.com"), DeleteCount: 0, DeleteBytes: 0},
 		{Email: mkT("c", "z.com"), DeleteCount: 1, DeleteBytes: 100},
@@ -54,7 +54,7 @@ func TestNewModel_PreSelectsSendersWithDeleteCount(t *testing.T) {
 }
 
 func TestUpdate_SpaceTogglesSender(t *testing.T) {
-	m := NewModel([]storage.SenderSafety{
+	m := NewModel([]models.SenderSafety{
 		{Email: mkT("a", "x.com"), DeleteCount: 1},
 		{Email: mkT("b", "x.com"), DeleteCount: 1},
 	})
@@ -68,7 +68,7 @@ func TestUpdate_SpaceTogglesSender(t *testing.T) {
 }
 
 func TestUpdate_J_K_MoveCursor(t *testing.T) {
-	m := NewModel([]storage.SenderSafety{
+	m := NewModel([]models.SenderSafety{
 		{Email: mkT("a", "x.com"), DeleteCount: 1},
 		{Email: mkT("b", "x.com"), DeleteCount: 1},
 		{Email: mkT("c", "x.com"), DeleteCount: 1},
@@ -104,7 +104,7 @@ func TestUpdate_J_K_MoveCursor(t *testing.T) {
 }
 
 func TestUpdate_Q_QuitsWithoutCommit(t *testing.T) {
-	m := NewModel([]storage.SenderSafety{{Email: mkT("a", "x.com"), DeleteCount: 1}})
+	m := NewModel([]models.SenderSafety{{Email: mkT("a", "x.com"), DeleteCount: 1}})
 	next := mustRun(t, func() (tea.Model, tea.Cmd) {
 		return m.Update(tea.KeyPressMsg{Code: 'q'})
 	})
@@ -117,7 +117,7 @@ func TestUpdate_Q_QuitsWithoutCommit(t *testing.T) {
 }
 
 func TestUpdate_EnterCommitsAndIncludesSelection(t *testing.T) {
-	m := NewModel([]storage.SenderSafety{
+	m := NewModel([]models.SenderSafety{
 		{Email: mkT("a", "x.com"), DeleteCount: 3, DeleteBytes: 1500},
 		{Email: mkT("b", "x.com"), DeleteCount: 0, DeleteBytes: 0},
 		{Email: mkT("c", "x.com"), DeleteCount: 7, DeleteBytes: 4200},
@@ -143,7 +143,7 @@ func TestUpdate_EnterCommitsAndIncludesSelection(t *testing.T) {
 }
 
 func TestUpdate_CtrlCEqualsQuit(t *testing.T) {
-	m := NewModel([]storage.SenderSafety{{Email: mkT("a", "x.com"), DeleteCount: 1}})
+	m := NewModel([]models.SenderSafety{{Email: mkT("a", "x.com"), DeleteCount: 1}})
 	next := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}) })
 	if !next.Quitted() {
 		t.Error("ctrl+c should quit")
@@ -151,7 +151,7 @@ func TestUpdate_CtrlCEqualsQuit(t *testing.T) {
 }
 
 func TestUpdate_A_SelectsAllJunk(t *testing.T) {
-	m := NewModel([]storage.SenderSafety{
+	m := NewModel([]models.SenderSafety{
 		{Email: mkT("a", "x.com"), DeleteCount: 5, DeleteBytes: 1000},
 		{Email: mkT("b", "y.com"), DeleteCount: 0, DeleteBytes: 0},
 		{Email: mkT("c", "z.com"), DeleteCount: 2, DeleteBytes: 100},
@@ -177,7 +177,7 @@ func TestUpdate_A_SelectsAllJunk(t *testing.T) {
 }
 
 func TestUpdate_N_ClearsSelection(t *testing.T) {
-	m := NewModel([]storage.SenderSafety{
+	m := NewModel([]models.SenderSafety{
 		{Email: mkT("a", "x.com"), DeleteCount: 1},
 		{Email: mkT("b", "x.com"), DeleteCount: 1},
 	})
@@ -256,7 +256,7 @@ func stripANSI(s string) string {
 }
 
 func TestView_MainViewContainsHeaderAndHelpers(t *testing.T) {
-	m := NewModel([]storage.SenderSafety{
+	m := NewModel([]models.SenderSafety{
 		{Email: mkT("a", "x.com"), DeleteCount: 7, DeleteBytes: 1024 * 1024 * 5},
 		{Email: mkT("b", "y.com"), DeleteCount: 0},
 	})
@@ -269,7 +269,7 @@ func TestView_MainViewContainsHeaderAndHelpers(t *testing.T) {
 }
 
 func TestView_CancelledMessage(t *testing.T) {
-	m := NewModel([]storage.SenderSafety{{Email: mkT("a", "x.com"), DeleteCount: 1}})
+	m := NewModel([]models.SenderSafety{{Email: mkT("a", "x.com"), DeleteCount: 1}})
 	q := mustRun(t, func() (tea.Model, tea.Cmd) {
 		return m.Update(tea.KeyPressMsg{Code: 'q'})
 	})
@@ -279,7 +279,7 @@ func TestView_CancelledMessage(t *testing.T) {
 }
 
 func TestView_CommittedSummary(t *testing.T) {
-	m := NewModel([]storage.SenderSafety{
+	m := NewModel([]models.SenderSafety{
 		{Email: mkT("a", "x.com"), DeleteCount: 9, DeleteBytes: 2048},
 	})
 	c := mustRun(t, func() (tea.Model, tea.Cmd) { return m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) })

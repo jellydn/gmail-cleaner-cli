@@ -10,10 +10,10 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"gclean/internal/format"
-	"gclean/internal/storage"
+	"gclean/internal/models"
 )
 
-// SenderRow flattens one storage.SenderSafety into the render path.
+// SenderRow flattens one models.SenderSafety into the render path.
 type SenderRow struct {
 	Email       string
 	TotalCount  int64
@@ -36,9 +36,9 @@ type Model struct {
 	committed bool
 }
 
-// NewModel ingests storage rows and pre-selects every sender with at least
-// one delete candidate (matches the §12 "Safe to delete" starter set).
-func NewModel(safeties []storage.SenderSafety) Model {
+// NewModel ingests sender-safety rows and pre-selects every sender with at
+// least one delete candidate (matches the §12 "Safe to delete" starter set).
+func NewModel(safeties []models.SenderSafety) Model {
 	rows := make([]SenderRow, len(safeties))
 	sel := map[string]bool{}
 	for i, s := range safeties {

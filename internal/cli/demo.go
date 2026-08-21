@@ -8,14 +8,13 @@ import (
 	"gclean/internal/defang"
 	"gclean/internal/format"
 	"gclean/internal/models"
-	"gclean/internal/storage"
 
 	"github.com/spf13/cobra"
 )
 
 // newDemoCmd prints a self-contained preview of what `gclean tui` will
 // surface once a scan has populated the local store. The sample rows are
-// storage.SenderSafety values, the EXACT type `gclean tui` and any future
+// models.SenderSafety values, the EXACT type `gclean tui` and any future
 // fixture-loader consume — so a contributor who reads demo.go can see a
 // one-to-one preview of the production shape.
 //
@@ -32,12 +31,12 @@ import (
 //     literals into `[email protected]` placeholders.
 //
 //  2. The data type is the real production struct, so future readers can
-//     pattern-match demo.go against sendersafety.go line-for-line.
+//     pattern-match demo.go against models.SenderSafety line-for-line.
 func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:   "demo",
 		Short: "Print a self-contained preview of `gclean tui` output (no scan required)",
-		Long: "Constructs a small set of sample storage.SenderSafety rows at runtime\n" +
+		Long: "Constructs a small set of sample models.SenderSafety rows at runtime\n" +
 			"via defang.MkEmail and renders them in the same shape as `gclean tui`.\n" +
 			"Useful for:\n" +
 			"  - new contributors checking the CLI on a fresh box\n" +
@@ -48,7 +47,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 			// Every field populated so the demo row is structurally identical
 			// to what storage.Aggregations().SendersSafe returns from SQLite. Reasons come
 			// from models.ReasonXxx so a contributor can grep demo.go against
-			// sendersafety.go to see the contract.
+			// models.SenderSafety to see the contract.
 			//
 			// DeleteBytes is sized proportionally to DeleteCount/TotalCount so
 			// total/delete/kept bytes add up consistently (TotalBytes =
@@ -59,7 +58,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 			// VerdictProtected). The demo rows have no protected cohort, so
 			// the two formulas coincide here — but a future contributor using
 			// this template should note the approximation.
-			samples := []storage.SenderSafety{
+			samples := []models.SenderSafety{
 				{
 					Email:       defang.MkEmail("alerts", "stripe.com"),
 					TotalCount:  14,
@@ -106,7 +105,7 @@ func newDemoCmd(out, errOut io.Writer) *cobra.Command {
 					Reasons:     []string{models.ReasonNewsletter},
 				},
 			}
-			_, _ = fmt.Fprintln(out, "gclean demo: sample storage.SenderSafety preview (no scan has been run yet)")
+			_, _ = fmt.Fprintln(out, "gclean demo: sample models.SenderSafety preview (no scan has been run yet)")
 			_, _ = fmt.Fprintln(out, "Each row was constructed at runtime via defang.MkEmail —")
 			_, _ = fmt.Fprintln(out, "the obfuscation-defense is load-bearing in production code, not just in tests.")
 			_, _ = fmt.Fprintln(out)
