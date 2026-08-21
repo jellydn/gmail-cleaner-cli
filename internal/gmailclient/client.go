@@ -29,4 +29,11 @@ type Client interface {
 	// RestoreFromTrash undoes a TrashMessages call where possible
 	// (within Gmail's 30-day window). Best-effort.
 	RestoreFromTrash(ids []string) error
+
+	// InTrash returns the subset of ids currently in Gmail's Trash. It is
+	// the source of truth for reconciling local state after a partial
+	// mutation: a message trashed server-side whose local mark failed (or
+	// vice versa) can be detected, so the undo cache and the SQLite store
+	// never silently drift from Gmail.
+	InTrash(ids []string) ([]string, error)
 }

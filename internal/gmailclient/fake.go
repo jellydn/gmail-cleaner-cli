@@ -120,6 +120,20 @@ func (f *FakeClient) RestoreFromTrash(ids []string) error {
 	return nil
 }
 
+// InTrash returns the subset of ids that are currently trashed in the
+// in-memory state.
+func (f *FakeClient) InTrash(ids []string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	in := []string{}
+	for _, id := range ids {
+		if f.trashed[id] {
+			in = append(in, id)
+		}
+	}
+	return in, nil
+}
+
 // TrashedIDs exposes currently trashed IDs (used by undo to know what to
 // restore). Not part of the Client interface — used by tests and CLI.
 func (f *FakeClient) TrashedIDs() []string {

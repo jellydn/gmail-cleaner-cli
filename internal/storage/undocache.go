@@ -35,18 +35,34 @@ func checksumRecords(recs []StoredMessage) (string, error) {
 
 // SaveUndoCache writes the pre-trash records to path with an integrity tag.
 // It writes and syncs a temporary file before renaming it into place so a
-// crash cannot leave a partially-written cache at the canonical path.
+// crash cannot leave a partially-written cache at the canonical path. It
+// refuses to overwrite a non-empty existing cache.
 func SaveUndoCache(path string, recs []StoredMessage) error {
+	return writeUndoCache(path, recs, false)
+}
+
+// ReplaceUndoCache overwrites an existing undo cache. It is used to trim the
+// records to the subset that actually reached Trash after a partial mutation
+// (or that remain in Trash after a partial restore/purge), so `gclean undo`
+// only ever touches the messages that really need it. The write is still
+// atomic.
+func ReplaceUndoCache(path string, recs []StoredMessage) error {
+	return writeUndoCache(path, recs, true)
+}
+
+func writeUndoCache(path string, recs []StoredMessage, overwrite bool) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if info, err := os.Stat(path); err == nil {
-		if info.Size() > 0 {
-			return fmt.Errorf("undo cache already exists at %s; run `gclean undo` or `gclean purge` first", path)
+	if !overwrite {
+		if info, err := os.Stat(path); err == nil {
+			if info.Size() > 0 {
+				return fmt.Errorf("undo cache already exists at %s; run `gclean undo` or `gclean purge` first", path)
+			}
+		} else if !os.IsNotExist(err) {
+			return err
 		}
-	} else if !os.IsNotExist(err) {
-		return err
 	}
 	sum, err := checksumRecords(recs)
 	if err != nil {
